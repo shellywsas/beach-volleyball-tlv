@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Tournament, Match, Group, Team } from './types';
+import { Tournament, Match, Group, Team, TournamentFinals } from './types';
 import { Header } from './components/Header';
 import { SetupTab } from './components/SetupTab';
 import { MatchesTab } from './components/MatchesTab';
 import { StandingsTab } from './components/StandingsTab';
 import { ShareSyncModal } from './components/ShareSyncModal';
 import { ManualMatchModal } from './components/ManualMatchModal';
+import { TournamentReportModal } from './components/TournamentReportModal';
 import {
   loadLocalTournament,
   saveLocalTournament,
@@ -14,28 +15,32 @@ import {
   initFirebaseService,
   getSavedFirebaseConfig,
 } from './services/firebase';
-import { generateAllTournamentMatches } from './utils/scheduler';
-import { Trophy, Calendar, Users, Settings, Smartphone, Award, Flame } from 'lucide-react';
+import { generateAllTournamentMatches, generateDefaultFinals } from './utils/scheduler';
+import { calculateGroupStandings } from './utils/standings';
+import { Trophy, Calendar, Users, Settings, Smartphone, Award, Flame, FileText } from 'lucide-react';
+import confetti from 'canvas-confetti';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'setup' | 'matches' | 'standings'>('setup');
+  const [activeTab, setActiveTab] = useState<'setup' | 'matches' | 'standings'>('matches');
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isCloudConnected, setIsCloudConnected] = useState(false);
 
   // Initialize tournament
   const [tournament, setTournament] = useState<Tournament>(() => {
-    // 1. Try URL tournament id
     const urlParams = new URLSearchParams(window.location.search);
     const urlTourId = urlParams.get('t');
 
-    // 2. Try LocalStorage
     const local = loadLocalTournament();
     if (local && (!urlTourId || local.id === urlTourId)) {
+      // Ensure finals exists
+      if (!local.finals) {
+        local.finals = generateDefaultFinals(local.groups, (local.matches?.length || 0) + 1);
+      }
       return local;
     }
 
-    // 3. Fallback to fresh initial tournament
     const newId = urlTourId || `TLV-${Math.floor(1000 + Math.random() * 9000)}`;
     const initialGroups: Group[] = [
       {
@@ -59,6 +64,7 @@ export const App: React.FC = () => {
     ];
 
     const initialMatches = generateAllTournamentMatches(initialGroups);
+    const initialFinals = generateDefaultFinals(initialGroups, initialMatches.length + 1);
 
     return {
       id: newId,
@@ -68,6 +74,7 @@ export const App: React.FC = () => {
       targetScore: 21,
       groups: initialGroups,
       matches: initialMatches,
+      finals: initialFinals,
       updatedAt: Date.now(),
     };
   });
@@ -112,7 +119,7 @@ export const App: React.FC = () => {
     }
   };
 
-  // Match updates
+  // Group Match update
   const handleUpdateMatch = async (updatedMatch: Match) => {
     const updatedMatches = tournament.matches.map((m) =>
       m.id === updatedMatch.id ? updatedMatch : m
@@ -120,6 +127,91 @@ export const App: React.FC = () => {
     const updatedTournament: Tournament = {
       ...tournament,
       matches: updatedMatches,
+      updatedAt: Date.now(),
+    };
+    handleUpdateTournament(updatedTournament);
+  };
+
+  // Finals Match update
+  const handleUpdateFinalsMatch = async (updatedMatch: Match) => {
+    if (!tournament.finals) return;
+
+    const currentMatches = [...tournament.finals.matches];
+    const matchIndex = currentMatches.findIndex((m) => m.id === updatedMatch.id);
+    if (matchIndex === -1) return;
+
+    currentMatches[matchIndex] = updatedMatch;
+
+    // Check if semi finals finished, propagate winners to Final and 3rd place!
+    const semi1 = currentMatches.find((m) => m.stage === 'semi' && m.stageName?.includes('1'));
+    const semi2 = currentMatches.find((m) => m.stage === 'semi' && m.stageName?.includes('2'));
+    const finalMatch = currentMatches.find((m) => m.stage === 'final');
+    const thirdMatch = currentMatches.find((m) => m.stage === 'third_place');
+
+    if (semi1 && semi2 && finalMatch && thirdMatch) {
+      if (semi1.isFinished && semi1.score1 !== null && semi1.score2 !== null) {
+        const s1WinnerId = semi1.score1 > semi1.score2 ? semi1.team1Id : semi1.team2Id;
+        const s1LoserId = semi1.score1 > semi1.score2 ? semi1.team2Id : semi1.team1Id;
+        finalMatch.team1Id = s1WinnerId;
+        thirdMatch.team1Id = s1LoserId;
+      }
+      if (semi2.isFinished && semi2.score1 !== null && semi2.score2 !== null) {
+        const s2WinnerId = semi2.score1 > semi2.score2 ? semi2.team1Id : semi2.team2Id;
+        const s2LoserId = semi2.score1 > semi2.score2 ? semi2.team2Id : semi2.team1Id;
+        finalMatch.team2Id = s2WinnerId;
+        thirdMatch.team2Id = s2LoserId;
+      }
+    }
+
+    const updatedTournament: Tournament = {
+      ...tournament,
+      finals: {
+        ...tournament.finals,
+        matches: currentMatches,
+      },
+      updatedAt: Date.now(),
+    };
+
+    handleUpdateTournament(updatedTournament);
+  };
+
+  // Sync qualified teams from groups into finals
+  const handleSyncFinalsTeams = () => {
+    if (!tournament.finals || tournament.groups.length === 0) return;
+
+    const currentFinalsMatches = [...tournament.finals.matches];
+
+    if (tournament.groups.length >= 2) {
+      const groupAStandings = calculateGroupStandings(tournament.groups[0], tournament.matches);
+      const groupBStandings = calculateGroupStandings(tournament.groups[1], tournament.matches);
+
+      const semi1 = currentFinalsMatches.find((m) => m.stage === 'semi' && m.stageName?.includes('1'));
+      const semi2 = currentFinalsMatches.find((m) => m.stage === 'semi' && m.stageName?.includes('2'));
+
+      if (semi1 && groupAStandings[0] && groupBStandings[1]) {
+        semi1.team1Id = groupAStandings[0].teamId;
+        semi1.team2Id = groupBStandings[1].teamId;
+      }
+
+      if (semi2 && groupBStandings[0] && groupAStandings[1]) {
+        semi2.team1Id = groupBStandings[0].teamId;
+        semi2.team2Id = groupAStandings[1].teamId;
+      }
+
+      confetti({
+        particleCount: 50,
+        spread: 60,
+        origin: { y: 0.6 },
+      });
+      alert('העולים מהבתים סונכרנו בהצלחה לשלב חצי הגמר והפלייאוף! 🏐');
+    }
+
+    const updatedTournament: Tournament = {
+      ...tournament,
+      finals: {
+        ...tournament.finals,
+        matches: currentFinalsMatches,
+      },
       updatedAt: Date.now(),
     };
     handleUpdateTournament(updatedTournament);
@@ -150,15 +242,9 @@ export const App: React.FC = () => {
     handleUpdateTournament(updatedTournament);
   };
 
-  // Create brand new tournament
+  // Create fresh tournament
   const handleNewTournament = () => {
-    if (
-      !confirm(
-        'האם לפתוח טורניר חדש? הנתונים הנוכחיים יוחלפו בלוח ריק (מומלץ לוודא ששמרתם או גיביתם קודם).'
-      )
-    ) {
-      return;
-    }
+    if (!confirm('האם לפתוח טורניר חדש? הנתונים יאותחלו.')) return;
 
     const newId = `TLV-${Math.floor(1000 + Math.random() * 9000)}`;
     const blankGroups: Group[] = [
@@ -182,6 +268,8 @@ export const App: React.FC = () => {
       },
     ];
 
+    const freshFinals = generateDefaultFinals(blankGroups, 1);
+
     const freshTournament: Tournament = {
       id: newId,
       title: 'טורניר כדורעף חופים כ"ח ת"א',
@@ -190,6 +278,7 @@ export const App: React.FC = () => {
       targetScore: 21,
       groups: blankGroups,
       matches: [],
+      finals: freshFinals,
       updatedAt: Date.now(),
     };
 
@@ -211,9 +300,9 @@ export const App: React.FC = () => {
 
       {/* Main Content Tabs & Container */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-3 sm:px-4 pt-4 md:pt-6">
-        {/* Navigation Tabs Bar */}
-        <div className="flex items-center justify-center mb-6">
-          <div className="bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-1 w-full max-w-md">
+        {/* Navigation Tabs Bar + PDF Report Button */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mb-6">
+          <div className="bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-1 w-full sm:max-w-md">
             <button
               type="button"
               onClick={() => setActiveTab('setup')}
@@ -224,7 +313,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Settings className="w-4 h-4" />
-              <span>1. הגדרת בתים</span>
+              <span>1. סידור הבתים</span>
             </button>
 
             <button
@@ -237,7 +326,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Flame className="w-4 h-4" />
-              <span>2. לוח משחקים</span>
+              <span>2. תוצאות ושעות</span>
             </button>
 
             <button
@@ -253,6 +342,16 @@ export const App: React.FC = () => {
               <span>3. טבלאות בתים</span>
             </button>
           </div>
+
+          {/* Quick PDF Report Trigger Button */}
+          <button
+            type="button"
+            onClick={() => setIsReportModalOpen(true)}
+            className="flex items-center gap-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-slate-900 font-black px-4 py-2.5 rounded-2xl text-xs sm:text-sm shadow-md transition-all active:scale-95 border border-amber-300 w-full sm:w-auto justify-center"
+          >
+            <Trophy className="w-4 h-4 fill-slate-900" />
+            <span>הפקת דוח PDF והכתרת מנצחים 📄</span>
+          </button>
         </div>
 
         {/* Active Tab View */}
@@ -268,9 +367,12 @@ export const App: React.FC = () => {
           <MatchesTab
             tournament={tournament}
             onUpdateMatch={handleUpdateMatch}
+            onUpdateFinalsMatch={handleUpdateFinalsMatch}
             onAddMatch={handleAddManualMatch}
             onDeleteMatch={handleDeleteMatch}
             onOpenManualModal={() => setIsManualModalOpen(true)}
+            onOpenReportModal={() => setIsReportModalOpen(true)}
+            onSyncFinalsTeams={handleSyncFinalsTeams}
           />
         )}
 
@@ -292,7 +394,7 @@ export const App: React.FC = () => {
           >
             <Settings className="w-5 h-5" />
           </div>
-          <span>הגדרות</span>
+          <span>בתים</span>
         </button>
 
         <button
@@ -308,7 +410,7 @@ export const App: React.FC = () => {
           >
             <Flame className="w-5 h-5" />
           </div>
-          <span>משחקים</span>
+          <span>תוצאות</span>
         </button>
 
         <button
@@ -326,6 +428,16 @@ export const App: React.FC = () => {
           </div>
           <span>טבלאות</span>
         </button>
+
+        <button
+          onClick={() => setIsReportModalOpen(true)}
+          className="flex flex-col items-center gap-1 text-[11px] font-bold text-amber-600"
+        >
+          <div className="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700">
+            <FileText className="w-5 h-5" />
+          </div>
+          <span>דוח PDF</span>
+        </button>
       </div>
 
       {/* Modals */}
@@ -342,6 +454,12 @@ export const App: React.FC = () => {
         onClose={() => setIsManualModalOpen(false)}
         tournament={tournament}
         onAddMatch={handleAddManualMatch}
+      />
+
+      <TournamentReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        tournament={tournament}
       />
 
       {/* App Footer */}

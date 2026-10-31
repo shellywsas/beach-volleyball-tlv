@@ -1,25 +1,44 @@
 import React, { useState } from 'react';
-import { Tournament, Match, Group, Team } from '../types';
-import { Trophy, CheckCircle2, RotateCcw, Plus, Trash2, ChevronDown, Filter, Edit3 } from 'lucide-react';
+import { Tournament, Match, Group, Team, TournamentFinals } from '../types';
+import { calculateGroupStandings } from '../utils/standings';
+import {
+  Trophy,
+  CheckCircle2,
+  RotateCcw,
+  Plus,
+  Trash2,
+  Clock,
+  FileText,
+  Flame,
+  Medal,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 interface MatchesTabProps {
   tournament: Tournament;
   onUpdateMatch: (match: Match) => void;
+  onUpdateFinalsMatch: (match: Match) => void;
   onAddMatch: (match: Match) => void;
   onDeleteMatch: (matchId: string) => void;
   onOpenManualModal: () => void;
+  onOpenReportModal: () => void;
+  onSyncFinalsTeams: () => void;
 }
 
 export const MatchesTab: React.FC<MatchesTabProps> = ({
   tournament,
   onUpdateMatch,
+  onUpdateFinalsMatch,
   onAddMatch,
   onDeleteMatch,
   onOpenManualModal,
+  onOpenReportModal,
+  onSyncFinalsTeams,
 }) => {
+  const [activeStageFilter, setActiveStageFilter] = useState<'groups' | 'finals'>('groups');
   const [selectedGroupFilter, setSelectedGroupFilter] = useState<string>('all');
-  const [editingScores, setEditingScores] = useState<Record<string, { s1: number; s2: number }>>({});
 
   const groupsMap = new Map<string, Group>();
   const teamsMap = new Map<string, { team: Team; groupName: string }>();
@@ -31,198 +50,227 @@ export const MatchesTab: React.FC<MatchesTabProps> = ({
     });
   });
 
-  const getTeamLabel = (teamId: string) => {
+  const getTeamDisplay = (teamId: string, fallbackLabel?: string) => {
+    if (!teamId) {
+      return {
+        number: '',
+        names: fallbackLabel || 'טרם נקבע',
+        groupName: '',
+      };
+    }
     const data = teamsMap.get(teamId);
-    if (!data) return 'זוג לא ידוע';
+    if (!data) {
+      return {
+        number: '',
+        names: fallbackLabel || 'טרם נקבע',
+        groupName: '',
+      };
+    }
     const names = [data.team.player1, data.team.player2].filter(Boolean).join(' ו-') || 'ללא שמות';
     return {
-      number: data.team.number,
+      number: `זוג ${data.team.number}`,
       names,
       groupName: data.groupName,
     };
   };
 
-  const filteredMatches = tournament.matches.filter((m) => {
+  // Group Matches
+  const filteredGroupMatches = tournament.matches.filter((m) => {
     if (selectedGroupFilter === 'all') return true;
     return m.groupId === selectedGroupFilter;
   });
 
-  const finishedCount = tournament.matches.filter((m) => m.isFinished).length;
-  const totalCount = tournament.matches.length;
+  const finishedGroupMatches = tournament.matches.filter((m) => m.isFinished).length;
+  const totalGroupMatches = tournament.matches.length;
 
-  const handleScoreChange = (matchId: string, team: 1 | 2, delta: number) => {
-    const match = tournament.matches.find((m) => m.id === matchId);
-    if (!match) return;
+  // Finals Matches
+  const finalsMatches = tournament.finals?.matches || [];
+  const finishedFinalsMatches = finalsMatches.filter((m) => m.isFinished).length;
 
-    const currentS1 = editingScores[matchId]?.s1 ?? match.score1 ?? 0;
-    const currentS2 = editingScores[matchId]?.s2 ?? match.score2 ?? 0;
-
-    let newS1 = currentS1;
-    let newS2 = currentS2;
-
-    if (team === 1) {
-      newS1 = Math.max(0, currentS1 + delta);
-    } else {
-      newS2 = Math.max(0, currentS2 + delta);
-    }
-
-    setEditingScores({
-      ...editingScores,
-      [matchId]: { s1: newS1, s2: newS2 },
-    });
-  };
-
-  const handleSetExactScore = (matchId: string, team: 1 | 2, valStr: string) => {
-    const val = parseInt(valStr, 10);
-    const validVal = isNaN(val) ? 0 : Math.max(0, val);
-
-    const match = tournament.matches.find((m) => m.id === matchId);
-    if (!match) return;
-
-    const currentS1 = editingScores[matchId]?.s1 ?? match.score1 ?? 0;
-    const currentS2 = editingScores[matchId]?.s2 ?? match.score2 ?? 0;
-
-    setEditingScores({
-      ...editingScores,
-      [matchId]: {
-        s1: team === 1 ? validVal : currentS1,
-        s2: team === 2 ? validVal : currentS2,
-      },
-    });
-  };
-
-  const handleFinishMatch = (match: Match) => {
-    const scores = editingScores[match.id] || {
-      s1: match.score1 ?? 0,
-      s2: match.score2 ?? 0,
-    };
-
-    if (scores.s1 === scores.s2) {
-      alert('בכדורעף חופים אין תיקו! אחד הזוגות חייב לנצח.');
-      return;
-    }
+  // Quick Direct Score Update: user simply writes "כמה כמה"
+  const handleScoreInput = (
+    match: Match,
+    isFinals: boolean,
+    field: 'score1' | 'score2',
+    valStr: string
+  ) => {
+    const val = valStr === '' ? null : parseInt(valStr, 10);
+    const validVal = val === null || isNaN(val) ? null : Math.max(0, val);
 
     const updated: Match = {
       ...match,
-      score1: scores.s1,
-      score2: scores.s2,
+      [field]: validVal,
+    };
+
+    // Auto finish if both scores are entered and not equal
+    if (
+      updated.score1 !== null &&
+      updated.score2 !== null &&
+      updated.score1 !== updated.score2
+    ) {
+      updated.isFinished = true;
+    } else if (updated.score1 === null || updated.score2 === null) {
+      updated.isFinished = false;
+    }
+
+    if (isFinals) {
+      onUpdateFinalsMatch(updated);
+    } else {
+      onUpdateMatch(updated);
+    }
+  };
+
+  // Quick update match time
+  const handleTimeChange = (match: Match, isFinals: boolean, newTime: string) => {
+    const updated: Match = {
+      ...match,
+      time: newTime,
+    };
+    if (isFinals) {
+      onUpdateFinalsMatch(updated);
+    } else {
+      onUpdateMatch(updated);
+    }
+  };
+
+  // Quick preset score buttons (21-15, 21-18, 21-19, 15-13)
+  const handleSetPresetScore = (
+    match: Match,
+    isFinals: boolean,
+    s1: number,
+    s2: number
+  ) => {
+    const updated: Match = {
+      ...match,
+      score1: s1,
+      score2: s2,
       isFinished: true,
     };
 
-    // Trigger celebratory confetti
     confetti({
-      particleCount: 50,
-      spread: 60,
+      particleCount: 40,
+      spread: 50,
       origin: { y: 0.8 },
       colors: ['#E91E63', '#22C8D6', '#FFDF00'],
     });
 
-    onUpdateMatch(updated);
-  };
-
-  const handleReopenMatch = (match: Match) => {
-    const updated: Match = {
-      ...match,
-      isFinished: false,
-    };
-    setEditingScores({
-      ...editingScores,
-      [match.id]: { s1: match.score1 ?? 0, s2: match.score2 ?? 0 },
-    });
-    onUpdateMatch(updated);
+    if (isFinals) {
+      onUpdateFinalsMatch(updated);
+    } else {
+      onUpdateMatch(updated);
+    }
   };
 
   return (
-    <div className="space-y-6 pb-20 max-w-5xl mx-auto">
-      {/* Top Banner & Progress */}
-      <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
+    <div className="space-y-6 pb-24 max-w-5xl mx-auto">
+      {/* Top Banner with Direct Action for PDF Report */}
+      <div className="bg-gradient-to-r from-tlv-navy to-tlv-navyLight text-white rounded-3xl p-5 shadow-xl border border-tlv-teal/30">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h2 className="text-xl md:text-2xl font-black text-tlv-navy flex items-center gap-2">
-              🏐 לוח משחקים ותוצאות בזמן אמת
-            </h2>
-            <p className="text-xs md:text-sm text-slate-500 mt-1">
-              הזינו את תוצאות המשחקים בקלות באמצעות כפתורי ה-+/- הגדולים. הטבלה תתעדכן מעצמה!
-            </p>
-          </div>
-
-          {/* Progress bar */}
-          <div className="bg-slate-50 rounded-2xl p-3 border border-slate-200 min-w-[200px]">
-            <div className="flex items-center justify-between text-xs font-black text-slate-700 mb-1.5">
-              <span>התקדמות הטורניר:</span>
-              <span className="text-tlv-pink">
-                {finishedCount} מתוך {totalCount} משחקים
+            <div className="flex items-center gap-2 mb-1">
+              <span className="bg-tlv-pink px-2.5 py-0.5 rounded-full text-xs font-black">
+                עדכון תוצאות מהיר
+              </span>
+              <span className="text-xs text-tlv-teal font-semibold">
+                כותבים רק "כמה-כמה" והטבלה מתעדכנת מיד!
               </span>
             </div>
-            <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-tlv-teal to-tlv-pink h-full transition-all duration-500 rounded-full"
-                style={{
-                  width: totalCount > 0 ? `${(finishedCount / totalCount) * 100}%` : '0%',
-                }}
-              ></div>
-            </div>
+            <h2 className="text-xl md:text-2xl font-black">
+              לוח משחקים, שעות ותוצאות
+            </h2>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenReportModal}
+              className="flex items-center gap-2 bg-gradient-to-r from-tlv-pink to-pink-600 hover:brightness-110 text-white px-4 py-2.5 rounded-2xl text-xs md:text-sm font-black shadow-lg transition-all active:scale-95"
+            >
+              <FileText className="w-4 h-4" />
+              <span>הפקת דוח PDF והכתרת מנצחים 🏆</span>
+            </button>
           </div>
         </div>
 
-        {/* Filter bar & Add Match */}
-        <div className="flex flex-wrap items-center justify-between gap-3 mt-5 pt-4 border-t border-slate-100">
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
-            <button
-              onClick={() => setSelectedGroupFilter('all')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap ${
-                selectedGroupFilter === 'all'
-                  ? 'bg-tlv-navy text-white shadow-md'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
-            >
-              כל הבתים ({tournament.matches.length})
-            </button>
-            {tournament.groups.map((group) => {
-              const groupMatchesCount = tournament.matches.filter((m) => m.groupId === group.id).length;
-              return (
-                <button
-                  key={group.id}
-                  onClick={() => setSelectedGroupFilter(group.id)}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap ${
-                    selectedGroupFilter === group.id
-                      ? 'bg-tlv-pink text-white shadow-md'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                  }`}
-                >
-                  {group.name} ({groupMatchesCount})
-                </button>
-              );
-            })}
-          </div>
+        {/* Stage Tabs (שלב הבתים / שלב הגמר) */}
+        <div className="flex items-center gap-2 mt-4 pt-4 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => setActiveStageFilter('groups')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+              activeStageFilter === 'groups'
+                ? 'bg-tlv-pink text-white shadow-md'
+                : 'bg-white/10 text-slate-300 hover:bg-white/20'
+            }`}
+          >
+            <span>שלב הבתים</span>
+            <span className="bg-black/20 px-2 py-0.5 rounded-full text-[11px]">
+              {finishedGroupMatches}/{totalGroupMatches}
+            </span>
+          </button>
 
           <button
-            onClick={onOpenManualModal}
-            className="flex items-center gap-1.5 bg-tlv-teal/20 hover:bg-tlv-teal/30 text-tlv-navy border border-tlv-teal/40 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm"
+            type="button"
+            onClick={() => setActiveStageFilter('finals')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+              activeStageFilter === 'finals'
+                ? 'bg-amber-400 text-slate-900 shadow-md'
+                : 'bg-white/10 text-slate-300 hover:bg-white/20'
+            }`}
           >
-            <Plus className="w-4 h-4 text-tlv-tealDark" />
-            <span>הוספת משחק ידני</span>
+            <Trophy className="w-3.5 h-3.5" />
+            <span>שלב הגמר והפלייאוף</span>
+            <span className="bg-black/20 px-2 py-0.5 rounded-full text-[11px]">
+              {finishedFinalsMatches}/{finalsMatches.length}
+            </span>
           </button>
         </div>
       </div>
 
-      {/* Match Cards List */}
-      {filteredMatches.length === 0 ? (
-        <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-slate-200">
-          <Trophy className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-          <h3 className="text-lg font-bold text-slate-700">אין משחקים להצגה כרגע</h3>
-          <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-            עבור ללשונית "הגדרת טורניר" ולחץ על "יצירת לוח המשחקים", או לחץ על "הוספת משחק ידני" כאן למעלה.
-          </p>
-        </div>
-      ) : (
+      {/* VIEW 1: GROUPS STAGE MATCHES */}
+      {activeStageFilter === 'groups' && (
         <div className="space-y-4">
-          {filteredMatches.map((match) => {
-            const team1 = getTeamLabel(match.team1Id);
-            const team2 = getTeamLabel(match.team2Id);
+          {/* Filter Bar */}
+          <div className="bg-white rounded-2xl p-3 shadow-xs border border-slate-200 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
+              <button
+                onClick={() => setSelectedGroupFilter('all')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap ${
+                  selectedGroupFilter === 'all'
+                    ? 'bg-tlv-navy text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                כל הבתים ({tournament.matches.length})
+              </button>
+              {tournament.groups.map((group) => (
+                <button
+                  key={group.id}
+                  onClick={() => setSelectedGroupFilter(group.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all whitespace-nowrap ${
+                    selectedGroupFilter === group.id
+                      ? 'bg-tlv-pink text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {group.name}
+                </button>
+              ))}
+            </div>
 
-            const s1 = editingScores[match.id]?.s1 ?? match.score1 ?? 0;
-            const s2 = editingScores[match.id]?.s2 ?? match.score2 ?? 0;
+            <button
+              onClick={onOpenManualModal}
+              className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-xl text-xs font-bold transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>הוסף משחק +</span>
+            </button>
+          </div>
+
+          {/* Group Matches Cards List */}
+          {filteredGroupMatches.map((match) => {
+            const team1 = getTeamDisplay(match.team1Id, match.team1Label);
+            const team2 = getTeamDisplay(match.team2Id, match.team2Label);
 
             const isTeam1Winner = match.isFinished && (match.score1 ?? 0) > (match.score2 ?? 0);
             const isTeam2Winner = match.isFinished && (match.score2 ?? 0) > (match.score1 ?? 0);
@@ -230,195 +278,361 @@ export const MatchesTab: React.FC<MatchesTabProps> = ({
             return (
               <div
                 key={match.id}
-                className={`bg-white rounded-3xl p-4 md:p-5 shadow-sm border-2 transition-all ${
+                className={`bg-white rounded-3xl p-4 sm:p-5 shadow-sm border-2 transition-all ${
                   match.isFinished
-                    ? 'border-emerald-200 bg-emerald-50/10'
+                    ? 'border-emerald-300 bg-emerald-50/15'
                     : 'border-slate-200 hover:border-tlv-teal/50'
                 }`}
               >
-                {/* Match Header Badge */}
-                <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
+                {/* Match Top Bar: Number, Group, Court & Editable Time */}
+                <div className="flex flex-wrap items-center justify-between pb-3 mb-3 border-b border-slate-100 gap-2">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs font-black bg-tlv-navy text-tlv-yellow px-2.5 py-1 rounded-xl">
                       משחק {match.matchNumber}
                     </span>
-                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-lg">
+                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-xl">
                       {match.groupName}
                     </span>
                     {match.court && (
-                      <span className="text-xs font-semibold text-tlv-tealDark bg-teal-50 px-2 py-0.5 rounded-lg">
+                      <span className="text-xs font-semibold text-tlv-tealDark bg-teal-50 px-2 py-0.5 rounded-lg hidden sm:inline">
                         {match.court}
                       </span>
                     )}
                   </div>
 
+                  {/* Time field (editable on the fly) */}
                   <div className="flex items-center gap-2">
-                    {match.isFinished ? (
-                      <span className="inline-flex items-center gap-1 text-xs font-black text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        הסתיים
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full">
-                        טרם שוחק
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1 bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200">
+                      <Clock className="w-3.5 h-3.5 text-slate-400" />
+                      <span className="text-xs font-bold text-slate-500">שעה:</span>
+                      <input
+                        type="time"
+                        value={match.time || '09:00'}
+                        onChange={(e) => handleTimeChange(match, false, e.target.value)}
+                        className="bg-transparent text-xs font-mono font-bold text-slate-800 focus:outline-none"
+                      />
+                    </div>
 
                     <button
                       onClick={() => onDeleteMatch(match.id)}
                       className="text-slate-300 hover:text-red-500 p-1 transition-colors"
-                      title="מחיקת משחק"
+                      title="מחק משחק"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
 
-                {/* Match Teams and Scoring Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-11 gap-3 items-center">
-                  {/* Team 1 Side */}
+                {/* Score Row: Direct "כמה כמה" entry */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                  {/* Team 1 Box */}
                   <div
-                    className={`md:col-span-5 p-3.5 rounded-2xl border-2 transition-all flex flex-col justify-between ${
+                    className={`md:col-span-5 p-3 rounded-2xl border-2 transition-all ${
                       isTeam1Winner
-                        ? 'bg-emerald-50 border-emerald-400 shadow-sm ring-1 ring-emerald-300'
+                        ? 'bg-emerald-50 border-emerald-400 ring-1 ring-emerald-300'
                         : 'bg-slate-50 border-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="inline-block text-xs font-black text-tlv-navy bg-white px-2 py-0.5 rounded-md border border-slate-200">
-                        זוג מספר {team1.number}
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-black text-tlv-navy bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                        {team1.number}
                       </span>
                       {isTeam1Winner && (
-                        <span className="flex items-center gap-1 text-xs font-black text-emerald-600 bg-white px-2 py-0.5 rounded-full shadow-xs">
-                          <Trophy className="w-3.5 h-3.5 text-tlv-yellow fill-tlv-yellow" />
+                        <span className="text-xs font-black text-emerald-600 flex items-center gap-1">
+                          <Trophy className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
                           ניצחון!
                         </span>
                       )}
                     </div>
-
-                    <div className="font-black text-base md:text-lg text-tlv-navy mb-3 line-clamp-2">
+                    <div className="font-black text-base text-tlv-navy line-clamp-1">
                       {team1.names}
-                    </div>
-
-                    {/* Team 1 Score Controls */}
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleScoreChange(match.id, 1, -1)}
-                          disabled={match.isFinished}
-                          className="w-9 h-9 rounded-xl bg-white hover:bg-slate-200 disabled:opacity-40 font-black text-slate-700 shadow-sm border border-slate-300 text-base active:scale-95 transition-all"
-                        >
-                          -
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleScoreChange(match.id, 1, 1)}
-                          disabled={match.isFinished}
-                          className="w-10 h-10 rounded-xl bg-tlv-pink hover:bg-tlv-pinkHover disabled:opacity-40 font-black text-white shadow-md text-lg active:scale-95 transition-all"
-                        >
-                          +1
-                        </button>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          value={s1}
-                          disabled={match.isFinished}
-                          onChange={(e) => handleSetExactScore(match.id, 1, e.target.value)}
-                          className="w-16 h-12 text-center text-2xl font-black rounded-xl bg-white border-2 border-slate-300 focus:border-tlv-pink focus:outline-none shadow-inner"
-                        />
-                      </div>
                     </div>
                   </div>
 
-                  {/* Center VS Divider */}
-                  <div className="md:col-span-1 text-center py-1">
-                    <span className="inline-block px-2.5 py-1 rounded-full bg-slate-200 text-slate-600 font-black text-xs">
-                      נגד
+                  {/* Center: "כמה כמה" score inputs */}
+                  <div className="md:col-span-2 flex flex-col items-center justify-center py-1">
+                    <span className="text-[11px] font-bold text-slate-400 mb-1">תוצאה (כמה-כמה):</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        placeholder="0"
+                        value={match.score1 ?? ''}
+                        onChange={(e) => handleScoreInput(match, false, 'score1', e.target.value)}
+                        className="w-14 h-12 text-center text-xl font-black rounded-xl bg-white border-2 border-slate-300 focus:border-tlv-pink focus:outline-none shadow-inner"
+                      />
+                      <span className="text-xl font-black text-slate-400">:</span>
+                      <input
+                        type="number"
+                        placeholder="0"
+                        value={match.score2 ?? ''}
+                        onChange={(e) => handleScoreInput(match, false, 'score2', e.target.value)}
+                        className="w-14 h-12 text-center text-xl font-black rounded-xl bg-white border-2 border-slate-300 focus:border-tlv-pink focus:outline-none shadow-inner"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Team 2 Box */}
+                  <div
+                    className={`md:col-span-5 p-3 rounded-2xl border-2 transition-all ${
+                      isTeam2Winner
+                        ? 'bg-emerald-50 border-emerald-400 ring-1 ring-emerald-300'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-black text-tlv-navy bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                        {team2.number}
+                      </span>
+                      {isTeam2Winner && (
+                        <span className="text-xs font-black text-emerald-600 flex items-center gap-1">
+                          <Trophy className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                          ניצחון!
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-black text-base text-tlv-navy line-clamp-1">
+                      {team2.names}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bottom Quick Preset Scores & Status */}
+                <div className="mt-3 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                    <span>תוצאות נפוצות:</span>
+                    <button
+                      type="button"
+                      onClick={() => handleSetPresetScore(match, false, 21, 18)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
+                    >
+                      21-18
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetPresetScore(match, false, 21, 15)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
+                    >
+                      21-15
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetPresetScore(match, false, 21, 19)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
+                    >
+                      21-19
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetPresetScore(match, false, 15, 13)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
+                    >
+                      15-13
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {match.isFinished ? (
+                      <span className="text-emerald-700 font-black text-xs flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        תוצאה נשמרה
+                      </span>
+                    ) : (
+                      <span className="text-slate-400 text-xs">הקלד תוצאה לסיום</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* VIEW 2: FINALS STAGE (חצי גמר, מקום 3, גמר) */}
+      {activeStageFilter === 'finals' && (
+        <div className="space-y-4">
+          {/* Finals Header Action */}
+          <div className="bg-amber-50 rounded-2xl p-4 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-black text-amber-950 flex items-center gap-1.5">
+                <Trophy className="w-4 h-4 text-amber-600" />
+                שלב הפלייאוף והגמר הגדול
+              </h3>
+              <p className="text-xs text-amber-800 mt-0.5">
+                תוכלו למלא תוך כדי שהמשחקים מתקיימים, או לסנכרן אוטומטית את העולים מהבתים בלחיצה:
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={onSyncFinalsTeams}
+              className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-slate-900 font-black px-3.5 py-2 rounded-xl text-xs shadow-sm transition-all"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>סנכרון עולים מהבתים לגמר 🔄</span>
+            </button>
+          </div>
+
+          {/* Finals Matches List */}
+          {finalsMatches.map((match) => {
+            const team1 = getTeamDisplay(match.team1Id, match.team1Label);
+            const team2 = getTeamDisplay(match.team2Id, match.team2Label);
+
+            const isTeam1Winner = match.isFinished && (match.score1 ?? 0) > (match.score2 ?? 0);
+            const isTeam2Winner = match.isFinished && (match.score2 ?? 0) > (match.score1 ?? 0);
+
+            const isGrandFinal = match.stage === 'final';
+
+            return (
+              <div
+                key={match.id}
+                className={`bg-white rounded-3xl p-4 sm:p-5 shadow-md border-2 transition-all ${
+                  isGrandFinal
+                    ? 'border-amber-400 bg-amber-50/20 ring-2 ring-amber-300/40'
+                    : 'border-slate-200'
+                }`}
+              >
+                {/* Match Header */}
+                <div className="flex flex-wrap items-center justify-between pb-3 mb-3 border-b border-slate-100 gap-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`font-black text-xs px-3 py-1 rounded-xl shadow-xs ${
+                        isGrandFinal
+                          ? 'bg-amber-400 text-slate-900 font-black'
+                          : 'bg-tlv-navy text-tlv-teal'
+                      }`}
+                    >
+                      {match.stageName || match.groupName}
                     </span>
+                    {match.court && (
+                      <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-lg">
+                        {match.court}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Time field */}
+                  <div className="flex items-center gap-1 bg-slate-50 px-2.5 py-1 rounded-xl border border-slate-200">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span className="text-xs font-bold text-slate-500">שעה:</span>
+                    <input
+                      type="time"
+                      value={match.time || '12:00'}
+                      onChange={(e) => handleTimeChange(match, true, e.target.value)}
+                      className="bg-transparent text-xs font-mono font-bold text-slate-800 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Score Input Row */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                  {/* Team 1 Side */}
+                  <div
+                    className={`md:col-span-5 p-3 rounded-2xl border-2 transition-all ${
+                      isTeam1Winner
+                        ? 'bg-emerald-50 border-emerald-400 ring-1 ring-emerald-300'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-bold text-slate-500">
+                        {match.team1Label || 'זוג 1'}
+                      </span>
+                      {isTeam1Winner && (
+                        <span className="text-xs font-black text-emerald-600 flex items-center gap-1">
+                          <Trophy className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
+                          ניצחון!
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-black text-base text-tlv-navy line-clamp-1">
+                      {team1.names}
+                    </div>
+                  </div>
+
+                  {/* Center "כמה כמה" inputs */}
+                  <div className="md:col-span-2 flex flex-col items-center justify-center py-1">
+                    <span className="text-[11px] font-bold text-slate-400 mb-1">תוצאה:</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        placeholder="0"
+                        value={match.score1 ?? ''}
+                        onChange={(e) => handleScoreInput(match, true, 'score1', e.target.value)}
+                        className="w-14 h-12 text-center text-xl font-black rounded-xl bg-white border-2 border-slate-300 focus:border-tlv-pink focus:outline-none shadow-inner"
+                      />
+                      <span className="text-xl font-black text-slate-400">:</span>
+                      <input
+                        type="number"
+                        placeholder="0"
+                        value={match.score2 ?? ''}
+                        onChange={(e) => handleScoreInput(match, true, 'score2', e.target.value)}
+                        className="w-14 h-12 text-center text-xl font-black rounded-xl bg-white border-2 border-slate-300 focus:border-tlv-pink focus:outline-none shadow-inner"
+                      />
+                    </div>
                   </div>
 
                   {/* Team 2 Side */}
                   <div
-                    className={`md:col-span-5 p-3.5 rounded-2xl border-2 transition-all flex flex-col justify-between ${
+                    className={`md:col-span-5 p-3 rounded-2xl border-2 transition-all ${
                       isTeam2Winner
-                        ? 'bg-emerald-50 border-emerald-400 shadow-sm ring-1 ring-emerald-300'
+                        ? 'bg-emerald-50 border-emerald-400 ring-1 ring-emerald-300'
                         : 'bg-slate-50 border-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="inline-block text-xs font-black text-tlv-navy bg-white px-2 py-0.5 rounded-md border border-slate-200">
-                        זוג מספר {team2.number}
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-bold text-slate-500">
+                        {match.team2Label || 'זוג 2'}
                       </span>
                       {isTeam2Winner && (
-                        <span className="flex items-center gap-1 text-xs font-black text-emerald-600 bg-white px-2 py-0.5 rounded-full shadow-xs">
-                          <Trophy className="w-3.5 h-3.5 text-tlv-yellow fill-tlv-yellow" />
+                        <span className="text-xs font-black text-emerald-600 flex items-center gap-1">
+                          <Trophy className="w-3.5 h-3.5 fill-amber-400 text-amber-500" />
                           ניצחון!
                         </span>
                       )}
                     </div>
-
-                    <div className="font-black text-base md:text-lg text-tlv-navy mb-3 line-clamp-2">
+                    <div className="font-black text-base text-tlv-navy line-clamp-1">
                       {team2.names}
-                    </div>
-
-                    {/* Team 2 Score Controls */}
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleScoreChange(match.id, 2, -1)}
-                          disabled={match.isFinished}
-                          className="w-9 h-9 rounded-xl bg-white hover:bg-slate-200 disabled:opacity-40 font-black text-slate-700 shadow-sm border border-slate-300 text-base active:scale-95 transition-all"
-                        >
-                          -
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleScoreChange(match.id, 2, 1)}
-                          disabled={match.isFinished}
-                          className="w-10 h-10 rounded-xl bg-tlv-pink hover:bg-tlv-pinkHover disabled:opacity-40 font-black text-white shadow-md text-lg active:scale-95 transition-all"
-                        >
-                          +1
-                        </button>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          value={s2}
-                          disabled={match.isFinished}
-                          onChange={(e) => handleSetExactScore(match.id, 2, e.target.value)}
-                          className="w-16 h-12 text-center text-2xl font-black rounded-xl bg-white border-2 border-slate-300 focus:border-tlv-pink focus:outline-none shadow-inner"
-                        />
-                      </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Match Bottom Action Buttons */}
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                  {!match.isFinished ? (
+                {/* Bottom Presets */}
+                <div className="mt-3 pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                    <span>תוצאות נפוצות:</span>
                     <button
                       type="button"
-                      onClick={() => handleFinishMatch(match)}
-                      className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm px-6 py-2.5 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2"
+                      onClick={() => handleSetPresetScore(match, true, 21, 18)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
                     >
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>שמירת תוצאה וסיום משחק</span>
+                      21-18
                     </button>
-                  ) : (
                     <button
                       type="button"
-                      onClick={() => handleReopenMatch(match)}
-                      className="text-xs text-slate-500 hover:text-tlv-pink flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-slate-100 transition-all font-bold"
+                      onClick={() => handleSetPresetScore(match, true, 21, 15)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
                     >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>עריכת תוצאה מחדש</span>
+                      21-15
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => handleSetPresetScore(match, true, 21, 19)}
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 font-mono"
+                    >
+                      21-19
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {match.isFinished ? (
+                      <span className="text-emerald-700 font-black text-xs flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        תוצאה נשמרה
+                      </span>
+                    ) : (
+                      <span className="text-slate-400 text-xs">הקלד תוצאה לסיום</span>
+                    )}
+                  </div>
                 </div>
               </div>
             );

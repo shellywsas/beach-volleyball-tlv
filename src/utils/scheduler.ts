@@ -1,17 +1,25 @@
-import { Group, Match, Team } from '../types';
+import { Group, Match, TournamentFinals, Team } from '../types';
+
+function formatMatchTime(baseHour: number, baseMinute: number, matchIndex: number): string {
+  const totalMinutes = baseHour * 60 + baseMinute + matchIndex * 30;
+  const hours = Math.floor(totalMinutes / 60) % 24;
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
 
 /**
  * Generate match schedule for groups
  *
- * For a 3-pair group (as specifically requested by the user):
+ * For a 3-pair group (as specifically requested by user):
  * Match 1: Pair 1 vs Pair 3
  * Match 2: Pair 2 vs Pair 3
  * Match 3: Pair 1 vs Pair 2
- *
- * For a 4-pair group (or other size):
- * Round-robin so all pairs play against each other
  */
-export function generateGroupMatches(group: Group, startingMatchNumber: number): Match[] {
+export function generateGroupMatches(
+  group: Group,
+  startingMatchNumber: number,
+  timeOffsetIndex: number = 0
+): Match[] {
   const teams = group.teams;
   const n = teams.length;
   const matches: Match[] = [];
@@ -19,6 +27,7 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
   if (n < 2) return matches;
 
   let currentNumber = startingMatchNumber;
+  let timeIdx = timeOffsetIndex;
 
   // Exact 3 teams format
   if (n === 3) {
@@ -32,11 +41,14 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
       groupId: group.id,
       groupName: group.name,
       matchNumber: currentNumber++,
+      stage: 'group',
       team1Id: t1,
       team2Id: t3,
       score1: null,
       score2: null,
       isFinished: false,
+      time: formatMatchTime(9, 0, timeIdx++),
+      court: 'מגרש 1',
     });
 
     // Game 2: 2 vs 3
@@ -45,11 +57,14 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
       groupId: group.id,
       groupName: group.name,
       matchNumber: currentNumber++,
+      stage: 'group',
       team1Id: t2,
       team2Id: t3,
       score1: null,
       score2: null,
       isFinished: false,
+      time: formatMatchTime(9, 0, timeIdx++),
+      court: 'מגרש 1',
     });
 
     // Game 3: 1 vs 2
@@ -58,11 +73,14 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
       groupId: group.id,
       groupName: group.name,
       matchNumber: currentNumber++,
+      stage: 'group',
       team1Id: t1,
       team2Id: t2,
       score1: null,
       score2: null,
       isFinished: false,
+      time: formatMatchTime(9, 0, timeIdx++),
+      court: 'מגרש 1',
     });
 
     return matches;
@@ -86,11 +104,14 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
         groupId: group.id,
         groupName: group.name,
         matchNumber: currentNumber++,
+        stage: 'group',
         team1Id: teamA,
         team2Id: teamB,
         score1: null,
         score2: null,
         isFinished: false,
+        time: formatMatchTime(9, 0, timeIdx++),
+        court: 'מגרש 1',
       });
     });
 
@@ -105,11 +126,14 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
         groupId: group.id,
         groupName: group.name,
         matchNumber: currentNumber++,
+        stage: 'group',
         team1Id: teams[i].id,
         team2Id: teams[j].id,
         score1: null,
         score2: null,
         isFinished: false,
+        time: formatMatchTime(9, 0, timeIdx++),
+        court: 'מגרש 1',
       });
     }
   }
@@ -123,12 +147,153 @@ export function generateGroupMatches(group: Group, startingMatchNumber: number):
 export function generateAllTournamentMatches(groups: Group[]): Match[] {
   let allMatches: Match[] = [];
   let currentNum = 1;
+  let timeIdx = 0;
 
   for (const group of groups) {
-    const groupMatches = generateGroupMatches(group, currentNum);
+    const groupMatches = generateGroupMatches(group, currentNum, timeIdx);
     allMatches = [...allMatches, ...groupMatches];
     currentNum += groupMatches.length;
+    timeIdx += groupMatches.length;
   }
 
   return allMatches;
+}
+
+/**
+ * Generate Finals Stage Matches (חצי גמר, מקום 3, גמר)
+ */
+export function generateDefaultFinals(
+  groups: Group[],
+  startingMatchNumber: number,
+  baseTimeMinutes: number = 720 // 12:00
+): TournamentFinals {
+  const matches: Match[] = [];
+  let num = startingMatchNumber;
+
+  if (groups.length >= 2) {
+    // 2+ groups: Semifinal 1, Semifinal 2, 3rd place, Grand Final
+    const groupA = groups[0];
+    const groupB = groups[1];
+
+    matches.push({
+      id: `finals_semi_1_${Date.now()}`,
+      groupId: 'finals',
+      groupName: 'שלב הגמר',
+      matchNumber: num++,
+      stage: 'semi',
+      stageName: 'חצי גמר 1',
+      team1Id: groupA.teams[0]?.id || '',
+      team2Id: groupB.teams[1]?.id || '',
+      team1Label: `מקום 1 ${groupA.name}`,
+      team2Label: `מקום 2 ${groupB.name}`,
+      score1: null,
+      score2: null,
+      isFinished: false,
+      time: '12:00',
+      court: 'מגרש מרכזי',
+    });
+
+    matches.push({
+      id: `finals_semi_2_${Date.now()}`,
+      groupId: 'finals',
+      groupName: 'שלב הגמר',
+      matchNumber: num++,
+      stage: 'semi',
+      stageName: 'חצי גמר 2',
+      team1Id: groupB.teams[0]?.id || '',
+      team2Id: groupA.teams[1]?.id || '',
+      team1Label: `מקום 1 ${groupB.name}`,
+      team2Label: `מקום 2 ${groupA.name}`,
+      score1: null,
+      score2: null,
+      isFinished: false,
+      time: '12:30',
+      court: 'מגרש מרכזי',
+    });
+
+    matches.push({
+      id: `finals_third_${Date.now()}`,
+      groupId: 'finals',
+      groupName: 'שלב הגמר',
+      matchNumber: num++,
+      stage: 'third_place',
+      stageName: 'משחק על מקום 3 🥉',
+      team1Id: '',
+      team2Id: '',
+      team1Label: 'מפסיד חצי גמר 1',
+      team2Label: 'מפסיד חצי גמר 2',
+      score1: null,
+      score2: null,
+      isFinished: false,
+      time: '13:00',
+      court: 'מגרש 2',
+    });
+
+    matches.push({
+      id: `finals_final_${Date.now()}`,
+      groupId: 'finals',
+      groupName: 'שלב הגמר',
+      matchNumber: num++,
+      stage: 'final',
+      stageName: 'משחק הגמר הגדול 🏆',
+      team1Id: '',
+      team2Id: '',
+      team1Label: 'מנצח חצי גמר 1',
+      team2Label: 'מנצח חצי גמר 2',
+      score1: null,
+      score2: null,
+      isFinished: false,
+      time: '13:30',
+      court: 'מגרש מרכזי',
+    });
+
+    return {
+      hasFinals: true,
+      format: 'top4',
+      matches,
+    };
+  } else {
+    // 1 group: 3rd place and Final
+    matches.push({
+      id: `finals_third_${Date.now()}`,
+      groupId: 'finals',
+      groupName: 'שלב הגמר',
+      matchNumber: num++,
+      stage: 'third_place',
+      stageName: 'משחק על מקום 3 🥉',
+      team1Id: groups[0]?.teams[2]?.id || '',
+      team2Id: groups[0]?.teams[3]?.id || '',
+      team1Label: 'מקום 3 בבית',
+      team2Label: 'מקום 4 בבית',
+      score1: null,
+      score2: null,
+      isFinished: false,
+      time: '12:30',
+      court: 'מגרש 2',
+    });
+
+    matches.push({
+      id: `finals_final_${Date.now()}`,
+      groupId: 'finals',
+      groupName: 'שלב הגמר',
+      matchNumber: num++,
+      stage: 'final',
+      stageName: 'משחק הגמר הגדול 🏆',
+      team1Id: groups[0]?.teams[0]?.id || '',
+      team2Id: groups[0]?.teams[1]?.id || '',
+      team1Label: 'מקום 1 בבית',
+      team2Label: 'מקום 2 בבית',
+      score1: null,
+      score2: null,
+      isFinished: false,
+      time: '13:00',
+      court: 'מגרש מרכזי',
+    });
+
+    return {
+      hasFinals: true,
+      format: 'top2',
+      matches,
+    };
+  }
 }

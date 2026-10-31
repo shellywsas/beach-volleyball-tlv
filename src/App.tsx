@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Tournament, Match, Group, Team, TournamentFinals } from './types';
+import { Tournament, Match, Group, Team, TournamentFinals, TournamentFormat } from './types';
 import { Header } from './components/Header';
 import { SetupTab } from './components/SetupTab';
 import { MatchesTab } from './components/MatchesTab';
@@ -15,9 +15,12 @@ import {
   initFirebaseService,
   getSavedFirebaseConfig,
 } from './services/firebase';
-import { generateAllTournamentMatches, generateDefaultFinals } from './utils/scheduler';
+import {
+  generateMatchesForFormat,
+  generateFinalsForFormat,
+} from './utils/scheduler';
 import { calculateGroupStandings } from './utils/standings';
-import { Trophy, Calendar, Users, Settings, Smartphone, Award, Flame, FileText } from 'lucide-react';
+import { Trophy, Settings, Flame, FileText } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export const App: React.FC = () => {
@@ -34,9 +37,9 @@ export const App: React.FC = () => {
 
     const local = loadLocalTournament();
     if (local && (!urlTourId || local.id === urlTourId)) {
-      // Ensure finals exists
+      if (!local.format) local.format = 'pools_playoffs';
       if (!local.finals) {
-        local.finals = generateDefaultFinals(local.groups, (local.matches?.length || 0) + 1);
+        local.finals = generateFinalsForFormat(local.format, local.groups, (local.matches?.length || 0) + 1);
       }
       return local;
     }
@@ -63,13 +66,14 @@ export const App: React.FC = () => {
       },
     ];
 
-    const initialMatches = generateAllTournamentMatches(initialGroups);
-    const initialFinals = generateDefaultFinals(initialGroups, initialMatches.length + 1);
+    const initialMatches = generateMatchesForFormat('pools_playoffs', initialGroups);
+    const initialFinals = generateFinalsForFormat('pools_playoffs', initialGroups, initialMatches.length + 1);
 
     return {
       id: newId,
       title: 'טורניר כדורעף חופים כ"ח ת"א',
       date: new Date().toISOString().split('T')[0],
+      format: 'pools_playoffs',
       scheduleMode: 'auto',
       targetScore: 21,
       groups: initialGroups,
@@ -142,24 +146,38 @@ export const App: React.FC = () => {
 
     currentMatches[matchIndex] = updatedMatch;
 
-    // Check if semi finals finished, propagate winners to Final and 3rd place!
-    const semi1 = currentMatches.find((m) => m.stage === 'semi' && m.stageName?.includes('1'));
-    const semi2 = currentMatches.find((m) => m.stage === 'semi' && m.stageName?.includes('2'));
-    const finalMatch = currentMatches.find((m) => m.stage === 'final');
-    const thirdMatch = currentMatches.find((m) => m.stage === 'third_place');
+    // Propagation logic for Finals & 3rd place
+    const semi1 = currentMatches.find((m) => m.stage === 'semi' || m.stage === 'gold_semi');
+    const semi2 = currentMatches.find((m) => (m.stage === 'semi' || m.stage === 'gold_semi') && m.id !== semi1?.id);
+    const finalMatch = currentMatches.find((m) => m.stage === 'final' || m.stage === 'gold_final');
+    const thirdMatch = currentMatches.find((m) => m.stage === 'third_place' || m.stage === 'gold_third');
 
-    if (semi1 && semi2 && finalMatch && thirdMatch) {
+    if (semi1 && semi2 && finalMatch) {
       if (semi1.isFinished && semi1.score1 !== null && semi1.score2 !== null) {
-        const s1WinnerId = semi1.score1 > semi1.score2 ? semi1.team1Id : semi1.team2Id;
-        const s1LoserId = semi1.score1 > semi1.score2 ? semi1.team2Id : semi1.team1Id;
-        finalMatch.team1Id = s1WinnerId;
-        thirdMatch.team1Id = s1LoserId;
+        finalMatch.team1Id = semi1.score1 > semi1.score2 ? semi1.team1Id : semi1.team2Id;
+        if (thirdMatch) {
+          thirdMatch.team1Id = semi1.score1 > semi1.score2 ? semi1.team2Id : semi1.team1Id;
+        }
       }
       if (semi2.isFinished && semi2.score1 !== null && semi2.score2 !== null) {
-        const s2WinnerId = semi2.score1 > semi2.score2 ? semi2.team1Id : semi2.team2Id;
-        const s2LoserId = semi2.score1 > semi2.score2 ? semi2.team2Id : semi2.team1Id;
-        finalMatch.team2Id = s2WinnerId;
-        thirdMatch.team2Id = s2LoserId;
+        finalMatch.team2Id = semi2.score1 > semi2.score2 ? semi2.team1Id : semi2.team2Id;
+        if (thirdMatch) {
+          thirdMatch.team2Id = semi2.score1 > semi2.score2 ? semi2.team2Id : semi2.team1Id;
+        }
+      }
+    }
+
+    // Silver bracket propagation if Gold/Silver
+    const silverSemi1 = currentMatches.find((m) => m.stage === 'silver_semi');
+    const silverSemi2 = currentMatches.find((m) => m.stage === 'silver_semi' && m.id !== silverSemi1?.id);
+    const silverFinal = currentMatches.find((m) => m.stage === 'silver_final');
+
+    if (silverSemi1 && silverSemi2 && silverFinal) {
+      if (silverSemi1.isFinished && silverSemi1.score1 !== null && silverSemi1.score2 !== null) {
+        silverFinal.team1Id = silverSemi1.score1 > silverSemi1.score2 ? silverSemi1.team1Id : silverSemi1.team2Id;
+      }
+      if (silverSemi2.isFinished && silverSemi2.score1 !== null && silverSemi2.score2 !== null) {
+        silverFinal.team2Id = silverSemi2.score1 > silverSemi2.score2 ? silverSemi2.team1Id : silverSemi2.team2Id;
       }
     }
 
@@ -181,7 +199,35 @@ export const App: React.FC = () => {
 
     const currentFinalsMatches = [...tournament.finals.matches];
 
-    if (tournament.groups.length >= 2) {
+    if (tournament.format === 'gold_silver' && tournament.groups.length >= 2) {
+      const groupAStandings = calculateGroupStandings(tournament.groups[0], tournament.matches);
+      const groupBStandings = calculateGroupStandings(tournament.groups[1], tournament.matches);
+
+      const gold1 = currentFinalsMatches.find((m) => m.stage === 'gold_semi' && m.stageName?.includes('1'));
+      const gold2 = currentFinalsMatches.find((m) => m.stage === 'gold_semi' && m.stageName?.includes('2'));
+      const silver1 = currentFinalsMatches.find((m) => m.stage === 'silver_semi' && m.stageName?.includes('1'));
+      const silver2 = currentFinalsMatches.find((m) => m.stage === 'silver_semi' && m.stageName?.includes('2'));
+
+      if (gold1 && groupAStandings[0] && groupBStandings[1]) {
+        gold1.team1Id = groupAStandings[0].teamId;
+        gold1.team2Id = groupBStandings[1].teamId;
+      }
+      if (gold2 && groupBStandings[0] && groupAStandings[1]) {
+        gold2.team1Id = groupBStandings[0].teamId;
+        gold2.team2Id = groupAStandings[1].teamId;
+      }
+      if (silver1 && groupAStandings[2] && groupBStandings[3]) {
+        silver1.team1Id = groupAStandings[2].teamId;
+        silver1.team2Id = groupBStandings[3].teamId;
+      }
+      if (silver2 && groupBStandings[2] && groupAStandings[3]) {
+        silver2.team1Id = groupBStandings[2].teamId;
+        silver2.team2Id = groupAStandings[3].teamId;
+      }
+
+      confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
+      alert('העולים לבית זהב ולבית כסף סונכרנו בהצלחה! 🥇🥈');
+    } else if (tournament.groups.length >= 2) {
       const groupAStandings = calculateGroupStandings(tournament.groups[0], tournament.matches);
       const groupBStandings = calculateGroupStandings(tournament.groups[1], tournament.matches);
 
@@ -192,17 +238,12 @@ export const App: React.FC = () => {
         semi1.team1Id = groupAStandings[0].teamId;
         semi1.team2Id = groupBStandings[1].teamId;
       }
-
       if (semi2 && groupBStandings[0] && groupAStandings[1]) {
         semi2.team1Id = groupBStandings[0].teamId;
         semi2.team2Id = groupAStandings[1].teamId;
       }
 
-      confetti({
-        particleCount: 50,
-        spread: 60,
-        origin: { y: 0.6 },
-      });
+      confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
       alert('העולים מהבתים סונכרנו בהצלחה לשלב חצי הגמר והפלייאוף! 🏐');
     }
 
@@ -268,12 +309,13 @@ export const App: React.FC = () => {
       },
     ];
 
-    const freshFinals = generateDefaultFinals(blankGroups, 1);
+    const freshFinals = generateFinalsForFormat('pools_playoffs', blankGroups, 1);
 
     const freshTournament: Tournament = {
       id: newId,
       title: 'טורניר כדורעף חופים כ"ח ת"א',
       date: new Date().toISOString().split('T')[0],
+      format: 'pools_playoffs',
       scheduleMode: 'auto',
       targetScore: 21,
       groups: blankGroups,
@@ -313,7 +355,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Settings className="w-4 h-4" />
-              <span>1. סידור הבתים</span>
+              <span>1. בחירת פורמט ובתים</span>
             </button>
 
             <button
@@ -339,11 +381,10 @@ export const App: React.FC = () => {
               }`}
             >
               <Trophy className="w-4 h-4" />
-              <span>3. טבלאות בתים</span>
+              <span>3. טבלאות דירוג</span>
             </button>
           </div>
 
-          {/* Quick PDF Report Trigger Button */}
           <button
             type="button"
             onClick={() => setIsReportModalOpen(true)}
@@ -394,7 +435,7 @@ export const App: React.FC = () => {
           >
             <Settings className="w-5 h-5" />
           </div>
-          <span>בתים</span>
+          <span>פורמט</span>
         </button>
 
         <button
@@ -410,7 +451,7 @@ export const App: React.FC = () => {
           >
             <Flame className="w-5 h-5" />
           </div>
-          <span>תוצאות</span>
+          <span>משחקים</span>
         </button>
 
         <button
@@ -426,7 +467,7 @@ export const App: React.FC = () => {
           >
             <Trophy className="w-5 h-5" />
           </div>
-          <span>טבלאות</span>
+          <span>דירוג</span>
         </button>
 
         <button
@@ -471,7 +512,7 @@ export const App: React.FC = () => {
             <span className="text-slate-300">העמותה לכדורעף חופים ע"ש רועי פלס</span>
           </div>
           <div className="text-[11px] text-slate-400">
-            אפליקציית ניהול טורנירים מותאמת לסמארטפון ולמחשב • פותחה באהבה לספורט החופים 🏐
+            אפליקציית ניהול טורנירים מותאמת לסמארטפון ולמחשב • כל הפורמטים במקום אחד 🏐
           </div>
         </div>
       </footer>

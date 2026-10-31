@@ -1,7 +1,7 @@
 import React from 'react';
 import { Tournament, Group } from '../types';
-import { calculateGroupStandings } from '../utils/standings';
-import { Trophy, Medal, Share2, Copy, Check, Info } from 'lucide-react';
+import { calculateGroupStandings, calculateKingStandings } from '../utils/standings';
+import { Trophy, Medal, Copy, Check, Info, Crown, Award } from 'lucide-react';
 
 interface StandingsTabProps {
   tournament: Tournament;
@@ -40,13 +40,21 @@ export const StandingsTab: React.FC<StandingsTabProps> = ({ tournament }) => {
   };
 
   const copyGroupWhatsAppSummary = (group: Group) => {
-    const standings = calculateGroupStandings(group, tournament.matches);
     let text = `🏐 *כ"ח תל אביב - מצב ${group.name}* 🏐\n טורניר: ${tournament.title}\n-------------------------\n`;
 
-    standings.forEach((st) => {
-      const medal = st.rank === 1 ? '🥇' : st.rank === 2 ? '🥈' : st.rank === 3 ? '🥉' : `${st.rank}.`;
-      text += `${medal} זוג ${st.teamNumber} (${st.playerNames})\n   ניצחונות: ${st.won} | הפסדים: ${st.lost} | הפרש נק': ${st.pointDiff > 0 ? '+' : ''}${st.pointDiff} | נק': ${st.tablePoints}\n`;
-    });
+    if (tournament.format === 'king_of_the_beach') {
+      const kingList = calculateKingStandings(group, tournament.matches);
+      kingList.forEach((st) => {
+        const medal = st.rank === 1 ? '👑 🥇' : st.rank === 2 ? '🥈' : st.rank === 3 ? '🥉' : `${st.rank}.`;
+        text += `${medal} ${st.name}\n   ניצחונות: ${st.won} | הפסדים: ${st.lost} | הפרש: ${st.pointDiff > 0 ? '+' : ''}${st.pointDiff} | נק' זכות: ${st.pointsFor}\n`;
+      });
+    } else {
+      const standings = calculateGroupStandings(group, tournament.matches);
+      standings.forEach((st) => {
+        const medal = st.rank === 1 ? '🥇' : st.rank === 2 ? '🥈' : st.rank === 3 ? '🥉' : `${st.rank}.`;
+        text += `${medal} זוג ${st.teamNumber} (${st.playerNames})\n   ניצחונות: ${st.won} | הפסדים: ${st.lost} | הפרש: ${st.pointDiff > 0 ? '+' : ''}${st.pointDiff} | נק': ${st.tablePoints}\n`;
+      });
+    }
 
     text += `\nמועדון כדורעף חופים כ"ח ת"א ע"ש רועי פלס 💙`;
 
@@ -61,7 +69,22 @@ export const StandingsTab: React.FC<StandingsTabProps> = ({ tournament }) => {
       <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl md:text-2xl font-black text-tlv-navy flex items-center gap-2">
-            🏆 טבלאות בתים ודירוג חי
+            {tournament.format === 'king_of_the_beach' ? (
+              <>
+                <Crown className="w-6 h-6 text-amber-500 fill-amber-400" />
+                טבלת דירוג אישית - מלך ומלכת החוף 👑
+              </>
+            ) : tournament.format === 'gold_silver' ? (
+              <>
+                <Award className="w-6 h-6 text-amber-600" />
+                טבלאות בתים: הכרעה לבית זהב ובית כסף
+              </>
+            ) : (
+              <>
+                <Trophy className="w-6 h-6 text-tlv-pink" />
+                טבלאות בתים ודירוג חי
+              </>
+            )}
           </h2>
           <p className="text-xs md:text-sm text-slate-500 mt-1">
             הדירוג מחושב אוטומטית לפי: ניצחונות ← הפרש נקודות ← נקודות זכות
@@ -74,20 +97,90 @@ export const StandingsTab: React.FC<StandingsTabProps> = ({ tournament }) => {
         </div>
       </div>
 
-      {/* Group Standings Tables */}
+      {/* Groups / League Standings Tables */}
       <div className="space-y-6">
         {tournament.groups.map((group) => {
-          const standings = calculateGroupStandings(group, tournament.matches);
           const groupMatches = tournament.matches.filter((m) => m.groupId === group.id);
           const finishedMatches = groupMatches.filter((m) => m.isFinished);
           const isGroupCompleted = groupMatches.length > 0 && finishedMatches.length === groupMatches.length;
+
+          // King of the Beach Individual View
+          if (tournament.format === 'king_of_the_beach') {
+            const kingStandings = calculateKingStandings(group, tournament.matches);
+
+            return (
+              <div key={group.id} className="bg-white rounded-3xl shadow-sm border-2 border-slate-200 overflow-hidden">
+                <div className="bg-gradient-to-r from-purple-800 to-indigo-900 text-white px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-400 text-slate-900 font-black text-lg flex items-center justify-center shadow-md">
+                      👑
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-black">{group.name}</h3>
+                      <p className="text-xs text-purple-200">
+                        דירוג אישי • {finishedMatches.length} מתוך {groupMatches.length} משחקים הושלמו
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => copyGroupWhatsAppSummary(group)}
+                    className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-sm transition-all self-start sm:self-auto"
+                  >
+                    {copiedGroup === group.id ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedGroup === group.id ? 'הועתק!' : 'העתק טבלה לוואטסאפ'}</span>
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-xs font-black text-slate-600">
+                        <th className="py-3 px-3 w-12 text-center">מיקום</th>
+                        <th className="py-3 px-3">שם השחקן/ית</th>
+                        <th className="py-3 px-2 text-center">משחקים</th>
+                        <th className="py-3 px-2 text-center text-emerald-700">ניצ'</th>
+                        <th className="py-3 px-2 text-center text-rose-600">הפס'</th>
+                        <th className="py-3 px-2 text-center">נק' זכות</th>
+                        <th className="py-3 px-2 text-center">נק' חובה</th>
+                        <th className="py-3 px-2 text-center font-bold">הפרש נק'</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {kingStandings.map((st) => (
+                        <tr key={st.id} className={st.rank === 1 ? 'bg-amber-50/50 font-bold' : ''}>
+                          <td className="py-3 px-3 text-center">
+                            <div className="flex justify-center">{getRankBadge(st.rank || 0)}</div>
+                          </td>
+                          <td className="py-3 px-3 font-black text-slate-900">{st.name}</td>
+                          <td className="py-3 px-2 text-center">{st.played}</td>
+                          <td className="py-3 px-2 text-center text-emerald-600 font-bold">{st.won}</td>
+                          <td className="py-3 px-2 text-center text-rose-500 font-bold">{st.lost}</td>
+                          <td className="py-3 px-2 text-center font-mono">{st.pointsFor}</td>
+                          <td className="py-3 px-2 text-center font-mono">{st.pointsAgainst}</td>
+                          <td className="py-3 px-2 text-center font-black font-mono">
+                            <span className={st.pointDiff > 0 ? 'text-emerald-600' : st.pointDiff < 0 ? 'text-rose-500' : 'text-slate-500'}>
+                              {st.pointDiff > 0 ? `+${st.pointDiff}` : st.pointDiff}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          }
+
+          // Regular Standings View
+          const standings = calculateGroupStandings(group, tournament.matches);
 
           return (
             <div
               key={group.id}
               className="bg-white rounded-3xl shadow-sm border-2 border-slate-200 overflow-hidden"
             >
-              {/* Group Header bar */}
               <div className="bg-gradient-to-r from-tlv-navy to-tlv-navyLight text-white px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-2xl bg-tlv-pink text-white font-black text-lg flex items-center justify-center shadow-md">
@@ -121,7 +214,6 @@ export const StandingsTab: React.FC<StandingsTabProps> = ({ tournament }) => {
                 </button>
               </div>
 
-              {/* Responsive Table */}
               <div className="overflow-x-auto">
                 <table className="w-full text-right border-collapse">
                   <thead>
